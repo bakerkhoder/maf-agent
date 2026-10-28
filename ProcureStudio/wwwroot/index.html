@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Procurement desk</title>
+<!--
+  A dependency-free AG-UI client: one file, no build step.
+  AG-UI = a streaming protocol (Server-Sent Events). The browser POSTs a "run" and the server answers with a stream
+  of JSON events: RUN_STARTED, TEXT_MESSAGE_*, TOOL_CALL_*, RUN_FINISHED (optionally carrying an INTERRUPT), RUN_ERROR.
+  This file turns those events into UI. Read the <script> section top to bottom; each function handles one concern.
+-->
+<style>
+  /* ───────── Tokens: ink and paper with one teal accent. Amber is reserved for "a human must decide". ───────── */
+  :root {
+    --ink: #16242b;       --ink-soft: #52656d;
+    --paper: #f4f6f6;     --surface: #ffffff;
+    --line: #d5dcdd;      --teal: #0d6e6e;      --teal-ink: #ffffff;
+    --slip: #fff6e2;      --slip-edge: #b7791f; --slip-ink: #5c3d0a;
+    --ok: #2e7d4f;        --bad: #b3261e;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e3ecee;     --ink-soft: #9db0b6;
+      --paper: #0f1a1f;   --surface: #16252c;
+      --line: #284049;    --teal: #4fb8b0;      --teal-ink: #08211f;
+      --slip: #2a2112;    --slip-edge: #d9a441; --slip-ink: #f1dcae;
+      --ok: #62c58a;      --bad: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 15px/1.55 var(--sans); color: var(--ink); background: var(--paper); display: grid; grid-template-rows: auto 1fr; }
+  :focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+  button, select, textarea { font: inherit; color: inherit; }
+
+  /* ───────── Header ───────── */
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--surface); }
+  header h1 { font-size: 17px; font-weight: 650; margin: 0 auto 0 0; letter-spacing: .01em; }
+  header label { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 13px; }
+  select { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  .btn { border: 1px solid var(--line); background: transparent; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  .btn:hover { border-color: var(--teal); }
+
+  /* ───────── Layout: ledger on the left, conversation on the right ───────── */
+  .app { display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+  aside { border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
+  aside h2 { font-size: 13px; font-weight: 600; color: var(--ink-soft); margin: 0; padding: 14px 20px 8px; }
+  .po { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; width: 100%; text-align: left; padding: 10px 20px; border: 0; border-top: 1px solid var(--line); background: transparent; cursor: pointer; }
+  .po:hover { background: var(--paper); }
+  .po b { font: 600 13px var(--mono); }
+  .po span { color: var(--ink-soft); font-size: 13px; }
+  .po .total { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .po .status::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--ink-soft); }
+  .po .status.pending::before { background: var(--slip-edge); }
+  .po .status.draft::before { background: var(--line); border: 1px solid var(--ink-soft); }
+
+  main { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+  #log { overflow: auto; padding: 24px 20px; scroll-behavior: smooth; }
+  .col { max-width: 760px; margin: 0 auto; }
+
+  /* ───────── Messages: user = tinted bubble on the right; assistant = flat text with a rule on the left ───────── */
+  .msg { margin: 0 0 18px; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .msg.user .body { background: var(--teal); color: var(--teal-ink); padding: 8px 14px; border-radius: 16px 16px 4px 16px; max-width: 80%; white-space: pre-wrap; }
+  .msg.assistant .body { border-left: 3px solid var(--line); padding-left: 14px; }
+  .body p { margin: 0 0 8px; } .body p:last-child { margin: 0; }
+  .body ul { margin: 0 0 8px; padding-left: 20px; }
+  .body code { font-family: var(--mono); font-size: 13px; background: var(--paper); padding: 1px 5px; border-radius: 4px; }
+  .streaming .body > :last-child::after { content: ""; display: inline-block; width: 7px; height: 1em; margin-left: 3px; vertical-align: text-bottom; background: var(--teal); animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ───────── Tool calls: one quiet line each, expandable ───────── */
+  details.tool { margin: 0 0 10px 17px; font-size: 13px; color: var(--ink-soft); }
+  details.tool summary { cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: center; }
+  details.tool summary::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--slip-edge); }
+  details.tool.done summary::before { background: var(--ok); }
+  details.tool.failed summary::before { background: var(--bad); }
+  details.tool pre { margin: 6px 0 0; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: auto; font: 12px/1.5 var(--mono); color: var(--ink); white-space: pre-wrap; }
+
+  /* ───────── The approval slip: the one memorable element. Perforated top edge, amber tab, plain verbs. ───────── */
+  .slip { margin: 4px 0 20px 17px; background: var(--slip); color: var(--slip-ink); border-left: 8px solid var(--slip-edge); border-top: 2px dashed var(--slip-edge); border-radius: 2px 6px 6px 2px; padding: 14px 16px; }
+  .slip h3 { margin: 0 0 2px; font-size: 15px; }
+  .slip p { margin: 0 0 10px; font-size: 13px; }
+  .slip dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 0 0 12px; font-size: 14px; }
+  .slip dt { opacity: .75; } .slip dd { margin: 0; font-family: var(--mono); font-size: 13px; }
+  .slip .actions { display: flex; gap: 10px; }
+  .slip button { padding: 7px 16px; border-radius: 4px; cursor: pointer; font-weight: 600; border: 2px solid var(--slip-edge); background: transparent; color: inherit; }
+  .slip button.go { background: var(--slip-edge); color: #fff; }
+  .slip.decided { opacity: .75; } .slip.decided .actions { display: none; }
+  .slip .result { font-weight: 600; font-size: 14px; }
+
+  .notice { margin: 0 0 16px 17px; font-size: 14px; color: var(--ink-soft); }
+  .notice.error { color: var(--bad); }
+
+  .empty { text-align: center; color: var(--ink-soft); padding: 8vh 0 0; }
+  .empty h2 { color: var(--ink); font-size: 20px; margin: 0 0 6px; }
+  .empty .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
+
+  /* ───────── Composer ───────── */
+  form { border-top: 1px solid var(--line); background: var(--surface); padding: 12px 20px; }
+  form .col { display: flex; gap: 10px; align-items: flex-end; }
+  textarea { flex: 1; resize: none; max-height: 160px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+  .send { background: var(--teal); color: var(--teal-ink); border: 0; border-radius: 10px; padding: 10px 18px; font-weight: 600; cursor: pointer; }
+  .send:disabled, textarea:disabled { opacity: .5; cursor: not-allowed; }
+  #status { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--ink-soft); min-height: 1.2em; }
+
+  @media (max-width: 820px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 28vh; }
+  }
+  @media (prefers-reduced-motion: reduce) { .streaming .body > :last-child::after { animation: none; } #log { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Procurement desk</h1>
+  <label>Signed in as
+    <select id="who" aria-label="Signed in as">
+      <option value="baker|buyer">baker (buyer)</option>
+      <option value="sara|buyer">sara (buyer)</option>
+      <option value="maya|manager">maya (manager)</option>
+      <option value="lee|viewer">lee (viewer)</option>
+    </select>
+  </label>
+  <label>Talk to
+    <select id="agent" aria-label="Agent">
+      <option value="triage">Triage assistant</option>
+      <option value="auditor">Policy auditor</option>
+    </select>
+  </label>
+  <button class="btn" id="newChat" type="button">New chat</button>
+</header>
+
+<div class="app">
+  <aside aria-label="Purchase orders">
+    <h2>Purchase orders</h2>
+    <div id="pos"></div>
+  </aside>
+
+  <main>
+    <div id="log" role="log" aria-live="polite" aria-label="Conversation"><div class="col" id="thread"></div></div>
+    <form id="form">
+      <div class="col">
+        <textarea id="input" rows="1" placeholder="Ask about a purchase order, or say what to do next" aria-label="Message"></textarea>
+        <button class="send" id="send" type="submit">Send</button>
+        <button class="btn" id="stop" type="button" hidden>Stop</button>
+      </div>
+      <div id="status" aria-live="polite"></div>
+    </form>
+  </main>
+</div>
+
+<script>
+/* ═══════════════ State ═══════════════
+   threadId = one conversation. The server stores the history, so each request only sends the NEW message. */
+const $ = (sel) => document.querySelector(sel);
+const newId = () => crypto.randomUUID();
+const state = { user: 'baker', role: 'buyer', agent: 'triage', thread: newId(), ctrl: null, pending: null };
+
+const els = { thread: $('#thread'), log: $('#log'), input: $('#input'), send: $('#send'), stop: $('#stop'), status: $('#status'), pos: $('#pos') };
+const messages = new Map();   // messageId -> { root, body, text }
+const tools = new Map();      // toolCallId -> { root, name, args, result }
+
+/* ═══════════════ Small helpers ═══════════════ */
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Tiny SAFE markdown: escape first, then allow only bold, inline code and bullet lists. No raw HTML ever reaches the DOM.
+function md(text) {
+  const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const out = []; let list = false;
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*[-*]\s+(.*)/);
+    if (m) { if (!list) { out.push('<ul>'); list = true; } out.push(`<li>${inline(m[1])}</li>`); }
+    else { if (list) { out.push('</ul>'); list = false; } if (line.trim()) out.push(`<p>${inline(line)}</p>`); }
+  }
+  if (list) out.push('</ul>');
+  return out.join('');
+}
+
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+const nearBottom = () => els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 120;
+function scrollDown(force) { if (force || nearBottom()) els.log.scrollTop = els.log.scrollHeight; }
+const setStatus = (t) => { els.status.textContent = t || ''; };
+
+/* Demo sign-in: the server's DemoAuthHandler trusts these headers. (Production: a bearer token instead.) */
+const headers = () => ({ 'Content-Type': 'application/json', 'Accept': 'text/event-stream', 'X-Demo-User': state.user, 'X-Demo-Role': state.role });
+
+/* ═══════════════ Purchase order panel (plain REST, refreshed after every run) ═══════════════ */
+async function loadPOs() {
+  try {
+    const res = await fetch('/api/pos', { headers: headers() });
+    if (!res.ok) return;
+    const list = await res.json();
+    els.pos.replaceChildren(...list.map((po) => {
+      const status = po.status.toLowerCase().startsWith('pending') ? 'pending' : 'draft';
+      const b = el('button', 'po', `<b>${esc(po.poNumber)}</b><span class="total">${po.total.toLocaleString('en-US')}</span>
+        <span>${esc(po.vendor)}, ${esc(po.department)}</span><span class="status ${status}">${esc(po.status)}</span>`);
+      b.type = 'button';
+      b.onclick = () => { els.input.value = `Review ${po.poNumber}`; els.input.focus(); };
+      return b;
+    }));
+  } catch { /* the panel is optional; ignore network errors */ }
+}
+
+/* ═══════════════ Conversation rendering ═══════════════ */
+function showEmpty() {
+  els.thread.replaceChildren();
+  const box = el('div', 'empty', `<h2>What should we review?</h2><div>Pick a purchase order on the left, or try one of these.</div>`);
+  const chips = el('div', 'chips');
+  const asks = state.agent === 'triage'
+    ? ['Review PO-100001', 'Check PO-100002 against its budget', 'Who approves a 30,000 order?']
+    : ['Who approves a 30,000 order?', 'When do I need vendor quotes?', 'Can I split an order?'];
+  for (const a of asks) { const b = el('button', 'btn', esc(a)); b.type = 'button'; b.onclick = () => submit(a); chips.append(b); }
+  box.append(chips); els.thread.append(box);
+}
+
+function addUser(text) { const m = el('div', 'msg user'); m.append(el('div', 'body')); m.firstChild.textContent = text; els.thread.append(m); scrollDown(true); }
+
+function assistantMessage(id) {
+  if (messages.has(id)) return messages.get(id);
+  const root = el('div', 'msg assistant streaming'); const body = el('div', 'body'); root.append(body);
+  els.thread.append(root);
+  const m = { root, body, text: '' }; messages.set(id, m); return m;
+}
+
+function toolChip(id, name) {
+  if (tools.has(id)) return tools.get(id);
+  const root = el('details', 'tool'); const sum = el('summary'); sum.textContent = `${name} is running`;
+  const pre = el('pre'); root.append(sum, pre); els.thread.append(root);
+  const t = { root, sum, pre, name, args: '', result: '' }; tools.set(id, t); return t;
+}
+const showTool = (t) => { t.pre.textContent = `arguments\n${t.args}${t.result ? `\n\nresult\n${t.result}` : ''}`; };
+
+function notice(text, error) { els.thread.append(el('div', 'notice' + (error ? ' error' : ''), esc(text))); scrollDown(true); }
+
+/* ═══════════════ AG-UI events -> UI ═══════════════ */
+function onEvent(ev) {
+  switch (ev.type) {
+    case 'RUN_STARTED':
+      setStatus('Working'); break;
+
+    case 'TEXT_MESSAGE_START':
+      assistantMessage(ev.messageId); break;
+
+    case 'TEXT_MESSAGE_CONTENT':
+    case 'TEXT_MESSAGE_CHUNK': {                       // CHUNK = start + content in one event
+      const m = assistantMessage(ev.messageId ?? 'chunk');
+      m.text += ev.delta ?? ''; m.body.innerHTML = md(m.text); scrollDown(); break;
+    }
+    case 'TEXT_MESSAGE_END':
+      messages.get(ev.messageId)?.root.classList.remove('streaming'); break;
+
+    case 'TOOL_CALL_START': {
+      const t = toolChip(ev.toolCallId, ev.toolCallName); setStatus(`Calling ${ev.toolCallName}`); showTool(t); break;
+    }
+    case 'TOOL_CALL_ARGS': {
+      const t = toolChip(ev.toolCallId, '(tool)'); t.args += ev.delta ?? ''; showTool(t); break;
+    }
+    case 'TOOL_CALL_RESULT': {
+      const t = toolChip(ev.toolCallId, '(tool)'); t.result = ev.content ?? '';
+      const failed = /"error"\s*:/.test(t.result);   // our tools and the gate return { error, message } on failure
+      t.root.classList.add(failed ? 'failed' : 'done');
+      t.sum.textContent = `${t.name} ${failed ? 'was blocked or failed' : 'finished'}`;
+      showTool(t); loadPOs(); break;
+    }
+    case 'RUN_FINISHED':
+      // A tool wrapped in ApprovalRequiredAIFunction ends the run with an INTERRUPT instead of executing.
+      if (ev.outcome?.type === 'interrupt') showApprovals(ev.outcome.interrupts ?? []);
+      break;
+
+    case 'RUN_ERROR':
+      notice(`The run failed: ${ev.message ?? 'unknown error'}`, true); break;
+
+    default:
+      console.debug('Unhandled AG-UI event', ev.type, ev);   // e.g. state or reasoning events: safe to ignore
+  }
+}
+
+/* ═══════════════ Human approval ═══════════════ */
+function showApprovals(interrupts) {
+  state.pending = { interrupts, decisions: new Map() };
+  for (const it of interrupts) {
+    const fc = it.metadata?.agent_framework?.function_call ?? {};
+    // AG-UI interrupt payloads can omit function metadata. Correlate by toolCallId with the
+    // TOOL_CALL_START/ARGS events already received so the human sees the exact pending action.
+    const pendingTool = tools.get(it.toolCallId);
+    const name = fc.name ?? pendingTool?.name ?? 'tool';
+    let args = fc.arguments ?? pendingTool?.args ?? {};
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); }
+      catch { args = { rawArguments: args }; }
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) args = { value: String(args) };
+
+    const slip = el('div', 'slip');
+    slip.setAttribute('role', 'group'); slip.setAttribute('aria-label', 'Approval needed');
+    slip.append(el('h3', null, 'Approval needed'));
+    slip.append(el('p', null, esc(it.message ?? `The assistant wants to run ${name}.`) + ` You are signed in as ${esc(state.user)} (${esc(state.role)}).`));
+    const dl = el('dl'); dl.append(el('dt', null, 'Action'), el('dd', null, esc(name)));
+    for (const [k, v] of Object.entries(args)) dl.append(el('dt', null, esc(k)), el('dd', null, esc(String(v))));
+    slip.append(dl);
+
+    const actions = el('div', 'actions');
+    const go = el('button', 'go', name === 'RouteForApproval' ? 'Approve and route' : `Approve ${name}`); go.type = 'button';
+    const no = el('button', null, 'Reject'); no.type = 'button';
+    const decide = (accepted) => {
+      slip.classList.add('decided');
+      slip.append(el('div', 'result', accepted ? 'Approved' : 'Rejected'));
+      state.pending.decisions.set(it.id, accepted);
+      if (state.pending.decisions.size === state.pending.interrupts.length) resume();   // all decided -> continue the run
+    };
+    go.onclick = () => decide(true); no.onclick = () => decide(false);
+    actions.append(go, no); slip.append(actions);
+    els.thread.append(slip); go.focus();
+  }
+  setBusy(false, true); scrollDown(true);
+}
+
+function resume() {
+  const { interrupts, decisions } = state.pending; state.pending = null;
+  // Canonical AG-UI resume payload. We send both 'accepted' (protocol) and 'approved' (the MAF type name): the server uses whichever it expects.
+  const resumeEntries = interrupts.map((it) => ({
+    interruptId: it.id, status: 'resolved',
+    payload: { accepted: decisions.get(it.id), approved: decisions.get(it.id) },
+  }));
+  run({ threadId: state.thread, runId: newId(), state: {}, messages: [], tools: [], context: [], forwardedProps: {}, resume: resumeEntries });
+}
+
+/* ═══════════════ Sending a run and reading the SSE stream ═══════════════ */
+function setBusy(busy, waitingForHuman) {
+  els.send.disabled = busy || !!waitingForHuman; els.input.disabled = busy || !!waitingForHuman; els.stop.hidden = !busy;
+  if (waitingForHuman) setStatus('Waiting for your decision above'); else if (!busy) setStatus('');
+}
+
+async function run(body) {
+  state.ctrl = new AbortController(); setBusy(true);
+  try {
+    const res = await fetch(`/ag-ui/${state.agent}`, { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: state.ctrl.signal });
+    if (!res.ok) throw new Error(res.status === 401 ? 'You are not signed in. Pick a user in the header.' : `The server returned ${res.status}.`);
+
+    // Read the response as it arrives. SSE frames are separated by a blank line and each carries "data: {json}".
+    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      let cut;
+      while ((cut = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+        const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+        if (data) { try { onEvent(JSON.parse(data)); } catch (e) { console.warn('Bad frame', data, e); } }
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') notice('Stopped.'); else notice(e.message, true);
+  } finally {
+    messages.forEach((m) => m.root.classList.remove('streaming'));
+    if (!state.pending) setBusy(false);
+    loadPOs();
+  }
+}
+
+function submit(text) {
+  text = text.trim(); if (!text) return;
+  if (els.thread.querySelector('.empty')) els.thread.replaceChildren();
+  addUser(text); els.input.value = ''; autosize();
+  run({ threadId: state.thread, runId: newId(), state: {}, tools: [], context: [], forwardedProps: {},
+        messages: [{ id: newId(), role: 'user', content: text }] });   // only the NEW message: the server keeps the history
+}
+
+/* ═══════════════ Wiring ═══════════════ */
+function resetChat() { state.thread = newId(); state.pending = null; messages.clear(); tools.clear(); setBusy(false); showEmpty(); loadPOs(); }
+function autosize() { els.input.style.height = 'auto'; els.input.style.height = Math.min(els.input.scrollHeight, 160) + 'px'; }
+
+$('#form').addEventListener('submit', (e) => { e.preventDefault(); submit(els.input.value); });
+els.input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(els.input.value); } });
+els.input.addEventListener('input', autosize);
+els.stop.addEventListener('click', () => state.ctrl?.abort());
+$('#newChat').addEventListener('click', resetChat);
+$('#who').addEventListener('change', (e) => { [state.user, state.role] = e.target.value.split('|'); resetChat(); });   // a different user = a different (isolated) conversation
+$('#agent').addEventListener('change', (e) => { state.agent = e.target.value; resetChat(); });
+
+resetChat();
+</script>
+</body>
+</html>

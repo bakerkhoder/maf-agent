@@ -1,0 +1,41 @@
+### Raw AG-UI protocol test (VS Code "REST Client" extension). Watch the SSE events stream back.
+### Event types to look for: RUN_STARTED, TEXT_MESSAGE_CONTENT, TOOL_CALL_START/ARGS/END/RESULT, RUN_FINISHED.
+@host = http://localhost:5300
+
+### 1. Not signed in -> 401
+GET {{host}}/api/pos
+
+### 2. Signed-in PO list
+GET {{host}}/api/pos
+X-Demo-User: baker
+X-Demo-Role: buyer
+
+### 3. One AG-UI run (a new thread id per conversation; reuse it to continue the same chat)
+POST {{host}}/ag-ui/triage
+Content-Type: application/json
+Accept: text/event-stream
+X-Demo-User: baker
+X-Demo-Role: buyer
+
+{
+  "threadId": "demo-thread-1",
+  "runId": "run-1",
+  "state": {},
+  "messages": [ { "id": "m1", "role": "user", "content": "Review PO-100001" } ],
+  "tools": [], "context": [], "forwardedProps": {}
+}
+
+### 4. Same thread as another user: gets a SEPARATE conversation (session isolation)
+POST {{host}}/ag-ui/triage
+Content-Type: application/json
+Accept: text/event-stream
+X-Demo-User: sara
+X-Demo-Role: buyer
+
+{
+  "threadId": "demo-thread-1",
+  "runId": "run-2",
+  "state": {},
+  "messages": [ { "id": "m2", "role": "user", "content": "approve it" } ],
+  "tools": [], "context": [], "forwardedProps": {}
+}

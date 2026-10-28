@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The agent framework preview APIs (session store, compaction, approvals) are flagged "evaluation only".
+         They are compile ERRORS by default, so we acknowledge them once here instead of with #pragma everywhere.
+         If the compiler names another code like MAAI00x, add it to this list. -->
+    <NoWarn>$(NoWarn);MAAI001;MEAI001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.26.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.26.0-preview.261023.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.AspNetCore" Version="1.26.0-preview.261023.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.26.0-preview.261023.1" />
+    <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
+    <PackageReference Include="OllamaSharp" Version="5.5.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.20.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.20.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ship the file-based skills next to the exe: AgentSkillsProvider reads them from disk at runtime. -->
+    <None Update="skills\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Session files are runtime data: never copy user conversations into build or publish output. -->
+    <Content Remove="sessions\**\*" />
+    <None Remove="sessions\**\*" />
+  </ItemGroup>
+</Project>
